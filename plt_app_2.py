@@ -1198,7 +1198,7 @@ if run_clicked:
             ax.set_facecolor(DARK)
             title_ax(ax, 'SHARE')
             if pos:
-                cm2 = plt.cm.get_cmap('tab20', len(pos))
+                cm2 = plt.colormaps.get_cmap('tab20').resampled(len(pos))
                 wedges, texts, autos = ax.pie(
                     list(pos.values()), labels=list(pos.keys()),
                     autopct='%1.0f%%',
