@@ -2,6 +2,5 @@ streamlit
 lasio
 scipy
 matplotlib
-matplotlib.pyplot
 numpy
 pandas
