@@ -247,8 +247,8 @@ converts spinner data to fluid velocity, and scales everything to match your sur
   <tr><td>Q Gas Res. (m³/d)</td><td>Q(top−0.5) − Q(base+0.5)</td><td>Zone gas at reservoir conditions. <b>Negative = thief zone.</b></td></tr>
   <tr><td>Q Gas SC (m³/d)</td><td>Q_res × Bg</td><td>Zone gas at surface standard conditions.</td></tr>
   <tr><td>Q Gas %</td><td>Q_zone / Total × 100</td><td>Must sum to ~100% across all P1 zone rows.</td></tr>
-  <tr><td>Q Oil SC (m³/d)</td><td>Q_gas_SC / GOR</td><td>Derived from GOR. Blank for S1 rows.</td></tr>
-  <tr><td>Q Wtr SC (m³/d)</td><td>Q_gas_SC / WGR</td><td>Derived from WGR. Blank for S1 rows.</td></tr>
+  <tr><td>Q Oil SC (m³/d)</td><td>Q_gas_SC × GOR</td><td>Derived from GOR. Blank for S1 rows.</td></tr>
+  <tr><td>Q Wtr SC (m³/d)</td><td>Q_gas_SC × WGR</td><td>Derived from WGR. Blank for S1 rows.</td></tr>
 </table>
 <b style="color:#dce8f8;font-size:12px;">Row colour coding:</b>
 <table class="ug-table" style="margin-top:6px;">
@@ -361,8 +361,8 @@ with st.sidebar:
                                 value=st.session_state.las_folder_path,
                                 key="las_folder_input",
                                 help="Type/paste path, or use the drag-drop zone on the main page")
-    bg_val     = st.number_input("Gas Formation Volume Factor (Bg)", value=0.008802, format="%.6f",
-                                  help="Bg = V_reservoir / V_surface. Typically 0.003–0.015 m³res/m³SC for gas wells. Bg < 1.")
+    bg_val     = st.number_input("Gas Expansion Factor (Bg)", value=113.695784, format="%.6f",
+                                  help="Bg = V_surface / V_reservoir (expansion factor). Typically 50–200 for gas wells.")
 
     st.markdown('<div class="section-header-gold">2 · SURFACE TESTS (dynamic)</div>', unsafe_allow_html=True)
     st.caption("S1/S2 rows are shut-in. Tick 'Active' only on flowing rows. Enable GOR/WOR lock to auto-scale oil & water.")
@@ -544,8 +544,8 @@ if run_clicked:
 
         prim  = flowing_tests[0]
         c_num = float(prim['choke'].replace('"','').split('/')[0])
-        SIM_TARGET_RES = (prim['qgas']*bg_val)*(c_num/36.0)**2*(prim['thp']/77.1)
-        S1_STABLE_REF  = prim['qgas'] * bg_val
+        SIM_TARGET_RES = (prim['qgas']/bg_val)*(c_num/36.0)**2*(prim['thp']/77.1)
+        S1_STABLE_REF  = prim['qgas'] / bg_val
 
         qg_p1 = prim['qgas']
         GOR   = prim['qoil'] / qg_p1 if qg_p1 > 0 else 0.0
@@ -677,17 +677,11 @@ if run_clicked:
         logp(f'   ✅ Static  run : {static_raw["fname"].iloc[0]}  (p_probe={get_p_probe(static_raw):.1f} kPa)\n')
 
         # ── AUTO SPINNER CALIBRATION ──────────────────────────
-        cal_all_raw = pd.concat(measurement_runs + transit_runs)
-        ct_auto  = cal_top if depth_lo_raw <= cal_top else depth_hi_raw - 50 if 'depth_hi_raw' in dir() else cal_top
-        cb_auto  = cal_bot
-
-        # use S1 (static) pass for calibration — lowest pressure = flowing, highest = static
-        s1_cal_df = static_raw.copy()
-        s1_cal_pts = s1_cal_df[(s1_cal_df['DEPTH'] >= cal_top) &
-                                (s1_cal_df['DEPTH'] <= cal_bot)].copy()
+        s1_cal_pts = static_raw[(static_raw['DEPTH'] >= cal_top) &
+                                 (static_raw['DEPTH'] <= cal_bot)].copy()
         if s1_cal_pts.empty:
-            s1_cal_pts = s1_cal_df.tail(max(10, len(s1_cal_df)//5)).copy()
-            logp(f'   ⚠️  Cal zone empty in S1 — using bottom {len(s1_cal_pts)} rows')
+            s1_cal_pts = static_raw.tail(max(10, len(static_raw)//5)).copy()
+            logp(f'   ⚠️  Cal zone empty in S1 — using bottom rows for calibration')
 
         s1_cal_pts['L_ms']   = s1_cal_pts['LSPD'] * 0.00508
         s1_cal_pts['L_mmin'] = s1_cal_pts['LSPD'] * 0.3048
@@ -781,9 +775,9 @@ if run_clicked:
         report, zone_pct_P1 = [], {}
         perf_depth = {name: t for t, b, name in perf_list}
 
-        comp_q_sc = SIM_TARGET_RES / bg_val
-        comp_oil  = comp_q_sc / GOR if GOR > 0 else 0.0
-        comp_wtr  = comp_q_sc / WGR if WGR > 0 else 0.0
+        comp_q_sc = SIM_TARGET_RES * bg_val
+        comp_oil  = comp_q_sc * GOR
+        comp_wtr  = comp_q_sc * WGR
 
         report.append(dict(
             Sub_Zone='Composite\n(Total)', Top=d_top, Base=d_bot,
@@ -810,20 +804,20 @@ if run_clicked:
             pct1 = (g1/SIM_TARGET_RES*100) if SIM_TARGET_RES!=0 else 0
             pct2 = (g2/S1_STABLE_REF *100) if S1_STABLE_REF !=0 else 0
             zone_pct_P1[name] = pct1
-            g1_sc = g1 / bg_val
+            g1_sc = g1 * bg_val
             report.append(dict(
                 Sub_Zone=name, Top=t, Base=b,
                 Press=float(np.interp(t,p1_m.index,p1_m['PRS'])),
                 Temp =float(np.interp(t,p1_m.index,p1_m['TMP'])),
                 Q_Res=g1, Q_SC=g1_sc, Q_pct=pct1,
-                Q_Oil=g1_sc/GOR if GOR>0 else 0.0, Q_Wtr=g1_sc/WGR if WGR>0 else 0.0,
+                Q_Oil=g1_sc*GOR, Q_Wtr=g1_sc*WGR,
                 Survey='P1', Choke=prim['choke'], THP=prim['thp'],
                 row_type='zone_p1'))
             report.append(dict(
                 Sub_Zone='', Top=np.nan, Base=np.nan,
                 Press=float(np.interp(t,s1_m.index,s1_m['PRS'])),
                 Temp =float(np.interp(t,s1_m.index,s1_m['TMP'])),
-                Q_Res=g2, Q_SC=g2/bg_val, Q_pct=pct2,
+                Q_Res=g2, Q_SC=g2*bg_val, Q_pct=pct2,
                 Q_Oil='-', Q_Wtr='-',
                 Survey='S1', Choke=choke_s1, THP=thp_s1,
                 row_type='zone_s1'))
@@ -832,26 +826,26 @@ if run_clicked:
             cn2   = float(ft['choke'].replace('"','').split('/')[0])
             q2r   = (ft["qgas"]*bg_val)*(cn2/36.0)**2*(ft['thp']/77.1)
             s2    = q2r/p1_top_q if abs(p1_top_q)>1e-9 else 1.0
-            q2_sc = ft["qgas"]
+            q2_sc = q2r * bg_val
             report.append(dict(
                 Sub_Zone='Composite\n(Total)', Top=d_top, Base=d_bot,
                 Press=float(np.interp(d_top,p1_m.index,p1_m['PRS'])),
                 Temp =float(np.interp(d_top,p1_m.index,p1_m['TMP'])),
                 Q_Res=q2r, Q_SC=q2_sc, Q_pct=100.0,
-                Q_Oil=q2_sc/GOR if GOR>0 else 0.0, Q_Wtr=q2_sc/WGR if WGR>0 else 0.0,
+                Q_Oil=q2_sc*GOR, Q_Wtr=q2_sc*WGR,
                 Survey=ft['survey'], Choke=ft['choke'], THP=ft['thp'],
                 row_type='comp_p1'))
             for t, b, name in perf_list:
                 g1  = float(np.interp(t-0.5,p1_m.index,p1_m['Q_FINAL'])
                             - np.interp(b+0.5,p1_m.index,p1_m['Q_FINAL']))
-                gs  = g1*s2; gs_sc=gs/bg_val
+                gs  = g1*s2; gs_sc=gs*bg_val
                 pct = (gs/q2r*100) if q2r!=0 else 0
                 report.append(dict(
                     Sub_Zone=name, Top=t, Base=b,
                     Press=float(np.interp(t,p1_m.index,p1_m['PRS'])),
                     Temp =float(np.interp(t,p1_m.index,p1_m['TMP'])),
                     Q_Res=gs, Q_SC=gs_sc, Q_pct=pct,
-                    Q_Oil=gs_sc/GOR if GOR>0 else 0.0, Q_Wtr=gs_sc/WGR if WGR>0 else 0.0,
+                    Q_Oil=gs_sc*GOR, Q_Wtr=gs_sc*WGR,
                     Survey=ft['survey'], Choke=ft['choke'], THP=ft['thp'],
                     row_type='zone_p1'))
 
@@ -950,6 +944,10 @@ if run_clicked:
         </div>''', unsafe_allow_html=True)
 
         # ── PER-RUN RAW CURVE DISPLAY ──────────────────────────
+        FG   = '#dce8f8'
+        DARK = '#08101e'
+        PAN  = '#0d1828'
+        GRD  = '#132035'
         st.markdown("---")
         st.markdown("### 📋 Raw Curves — Per Run (QC)")
         all_runs_display = measurement_runs + transit_runs
@@ -1009,6 +1007,7 @@ if run_clicked:
             )
 
         # ── ZONE SELECTOR for Drawdown plot ─────────────────────
+        v_grid   = np.linspace(depth_lo, depth_hi, 700)
         st.markdown("---")
         st.markdown("### 🎯 Pressure vs Flow — Per Zone")
         zone_names = [name for t, b, name in perf_list]
@@ -1236,7 +1235,7 @@ if run_clicked:
             for t_p, b_p, pname in sorted(perf_list, key=lambda x: x[0]):
                 g1 = float(np.interp(t_p-0.5, p1_m.index, p1_m['Q_FINAL'])
                            - np.interp(b_p+0.5, p1_m.index, p1_m['Q_FINAL']))
-                q_sc = g1 / bg_val
+                q_sc = g1 * bg_val
                 wf_n.append(pname); wf_d.append(q_sc)
                 wf_b.append(running); running += q_sc
             wf_n.append('TOTAL'); wf_d.append(running); wf_b.append(0.0)
